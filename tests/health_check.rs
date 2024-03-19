@@ -1,20 +1,34 @@
 //! tests/health_check.rs
 use std::net::TcpListener;
+use secrecy::ExposeSecret;
 use sqlx::{Connection, Executor, PgConnection, PgPool};
 use uuid::Uuid;
-use Zero2pro::{configuration::{get_configuration, DatabaseSettings}, startup::run};
-
+use Zero2pro::{configuration::{get_configuration, DatabaseSettings}, startup::run, telemetry::{get_subscriber, init_subscriber}};
+use once_cell::sync::Lazy;
 // `tokio::test` is the testing equivalent of `tokio::main`.
 // It also spares you from having to specify the `#[test]` attribute.
 //
 // You can inspect what code gets generated using
 // `cargo expand --test health_check` (<- name of the test file)
+static TRACING: Lazy<()> = Lazy::new(|| {
+    let default_filter_level = "info".to_string();
+    let subscriber_name = "test".to_string();
+    if std::env::var("TEST_LOG").is_ok() {
+        let subscriber = get_subscriber(subscriber_name, default_filter_level, std::io::stdout);
+        init_subscriber(subscriber);
+    } else {
+        let subscriber = get_subscriber(subscriber_name, default_filter_level, std::io::sink);
+        init_subscriber(subscriber);
+    };
+});
+
+
 pub struct TestApp {
     pub address: String,
     pub db_pool:PgPool,
 }
 pub async fn configure_database(config:&DatabaseSettings)->PgPool{
-    let mut connection = PgConnection::connect(&config.connection_string_without_db())
+    let mut connection = PgConnection::connect(&config.connection_string_without_db().expose_secret())
         .await
         .expect("Failed to connect Postgres");
     connection
@@ -22,7 +36,7 @@ pub async fn configure_database(config:&DatabaseSettings)->PgPool{
         .await
         .expect("Failed to create database");
     //migrate database
-    let connection_pool = PgPool::connect(&config.connection_string())
+    let connection_pool = PgPool::connect(&config.connection_string().expose_secret())
         .await
         .expect("Failed to connect postgres");
     sqlx::migrate!("./migrations")
@@ -52,7 +66,7 @@ async fn health_check_works(){
 }
 
 async fn spawn_app()->TestApp{
-
+    Lazy::force(&TRACING);
     let listener = TcpListener::bind("127.0.0.1:0")
         .expect("Fail to build a listener");
     let port = listener.local_addr().unwrap().port();
